@@ -11,6 +11,7 @@ from encoder import SmallAlexNet
 
 
 def parse_option():
+    import json
     parser = argparse.ArgumentParser('STL-10 Representation Learning with Alignment and Uniformity Losses')
 
     parser.add_argument('encoder_checkpoint', type=str, help='Encoder checkpoint to evaluate')
@@ -27,12 +28,15 @@ def parse_option():
     parser.add_argument('--log_interval', type=int, default=40, help='Number of iterations between logs')
     parser.add_argument('--gpu', type=int, default='0', help='One GPU to use')
 
-    parser.add_argument('--data_folder', type=str, default='./data', help='Path to data')
+    parser.add_argument('--data_folder', type=str, default=None, help='Path to data')
 
     opt = parser.parse_args()
+    opt.data_folder = '/afs/csail.mit.edu/u/h/hehaodele/radar/Hao/datasets'
 
     if opt.lr is None:
         opt.lr = 0.12 * (opt.batch_size / 256)
+
+    print(json.dumps(vars(opt), indent=2, default=lambda o: o.__dict__))
 
     opt.gpu = torch.device('cuda', opt.gpu)
     opt.lr_decay_epochs = list(map(int, opt.lr_decay_epochs.split(',')))
@@ -61,6 +65,7 @@ def get_data_loaders(opt):
     ])
     train_dataset = torchvision.datasets.STL10(opt.data_folder, 'train', download=True, transform=train_transform)
     val_dataset = torchvision.datasets.STL10(opt.data_folder, 'test', transform=val_transform)
+    print(f'train #{len(train_dataset)} valid #{len(val_dataset)}')
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=opt.batch_size,
                                                num_workers=opt.num_workers, shuffle=True, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=opt.batch_size,

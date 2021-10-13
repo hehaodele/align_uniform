@@ -39,9 +39,6 @@ def parse_option():
     parser.add_argument('--data_folder', type=str, default='./data', help='Path to data')
     parser.add_argument('--result_folder', type=str, default='./results', help='Base directory to save model')
 
-    parser.add_argument('--suffix', type=str, default='', help='Name Suffix')
-
-
     opt = parser.parse_args()
 
     opt.data_folder = '/afs/csail.mit.edu/u/h/hehaodele/radar/Hao/datasets'
@@ -54,13 +51,9 @@ def parse_option():
 
     opt.gpus = list(map(lambda x: torch.device('cuda', x), opt.gpus))
 
-    exp_name = f"align{opt.align_w:g}alpha{opt.align_alpha:g}_unif{opt.unif_w:g}t{opt.unif_t:g}"
-    if len(opt.suffix) > 0:
-        exp_name += f'_{opt.suffix}'
-
     opt.save_folder = os.path.join(
         opt.result_folder,
-        exp_name
+        f"align{opt.align_w:g}alpha{opt.align_alpha:g}_unif{opt.unif_w:g}t{opt.unif_t:g}_info"
     )
     os.makedirs(opt.save_folder, exist_ok=True)
 
@@ -68,8 +61,9 @@ def parse_option():
 
 
 def get_data_loader(opt):
-    transform = torchvision.transforms.Compose([
-        torchvision.transforms.RandomResizedCrop(64, scale=(0.08, 1)),
+    from util import RandomResizedCropWithBox, TwoAugUnsupervisedDatasetWithBox
+    transform_crop = RandomResizedCropWithBox(64, scale=(0.08, 1))
+    transform_others = torchvision.transforms.Compose([
         torchvision.transforms.RandomHorizontalFlip(),
         torchvision.transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
         torchvision.transforms.RandomGrayscale(p=0.2),
@@ -79,11 +73,14 @@ def get_data_loader(opt):
             (0.26826768628079806, 0.2610450402318512, 0.26866836876860795),
         ),
     ])
-    dataset = TwoAugUnsupervisedDataset(
-        torchvision.datasets.STL10(opt.data_folder, 'train+unlabeled', download=True), transform=transform)
+    dataset = TwoAugUnsupervisedDatasetWithBox(
+        torchvision.datasets.STL10(opt.data_folder, 'train+unlabeled', download=True), transform_crop, transform_others)
     return torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, num_workers=opt.num_workers,
                                        shuffle=True, pin_memory=True)
 
+
+def get_rate(x):
+    return sum(x) / len(x) * 100
 
 def main():
     opt = parse_option()
@@ -107,33 +104,57 @@ def main():
     unif_meter = AverageMeter('uniform_loss')
     loss_meter = AverageMeter('total_loss')
     it_time_meter = AverageMeter('iter_time')
+    info_rate_meter = AverageMeter('info_rate')
     for epoch in range(opt.epochs):
         align_meter.reset()
         unif_meter.reset()
         loss_meter.reset()
         it_time_meter.reset()
         t0 = time.time()
-        for ii, (im_x, im_y) in enumerate(loader):
+        for ii, (im_x, info_x, im_y, info_y) in enumerate(loader):
             optim.zero_grad()
             x, y = encoder(torch.cat([im_x.to(opt.gpus[0]), im_y.to(opt.gpus[0])])).chunk(2)
             align_loss_val = align_loss(x, y, alpha=opt.align_alpha)
             unif_loss_val = (uniform_loss(x, t=opt.unif_t) + uniform_loss(y, t=opt.unif_t)) / 2
             loss = align_loss_val * opt.align_w + unif_loss_val * opt.unif_w
+
+            info_x_index = info_x.to(opt.gpus[0]) > 0.3
+            info_y_index = info_y.to(opt.gpus[0]) > 0.3
+
+            info_pair_index = info_x_index & info_y_index
+
+            if info_pair_index.any():
+                align_loss_info = align_loss(x[info_pair_index], y[info_pair_index], alpha=opt.align_alpha)
+            else:
+                align_loss_info = 0
+
+            uniform_loss_noninfo = 0
+            if (~info_x_index).any():
+                uniform_loss_noninfo += uniform_loss(x[~info_x_index], t=opt.unif_t)
+            if (~info_y_index).any():
+                uniform_loss_noninfo += uniform_loss(y[~info_y_index], t=opt.unif_t)
+            uniform_loss_noninfo /= 2
+
+            loss_info = align_loss_info * opt.align_w + uniform_loss_noninfo * opt.unif_w
+
+            loss = loss + loss_info
+
             align_meter.update(align_loss_val, x.shape[0])
             unif_meter.update(unif_loss_val)
             loss_meter.update(loss, x.shape[0])
+            info_rate_meter.update((get_rate(info_x_index)+get_rate(info_y_index))/2)
             loss.backward()
             optim.step()
             it_time_meter.update(time.time() - t0)
             if ii % opt.log_interval == 0:
                 print(f"Epoch {epoch}/{opt.epochs}\tIt {ii}/{len(loader)}\t" +
-                      f"{align_meter}\t{unif_meter}\t{loss_meter}\t{it_time_meter}")
+                      f"{align_meter}\t{unif_meter}\t{loss_meter}\t{it_time_meter}\t{info_rate_meter}")
             t0 = time.time()
         scheduler.step()
+
         if epoch % 40 == 0:
             ckpt_file = os.path.join(opt.save_folder, f'encoder-ep{epoch}.pth')
             torch.save(encoder.module.state_dict(), ckpt_file)
-
     ckpt_file = os.path.join(opt.save_folder, 'encoder.pth')
     torch.save(encoder.module.state_dict(), ckpt_file)
     print(f'Saved to {ckpt_file}')
