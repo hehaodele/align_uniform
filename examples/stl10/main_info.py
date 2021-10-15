@@ -38,6 +38,7 @@ def parse_option():
 
     parser.add_argument('--data_folder', type=str, default='./data', help='Path to data')
     parser.add_argument('--result_folder', type=str, default='./results', help='Base directory to save model')
+    parser.add_argument('--suffix', type=str, default='info', help='Name Suffix')
 
     opt = parser.parse_args()
 
@@ -51,9 +52,13 @@ def parse_option():
 
     opt.gpus = list(map(lambda x: torch.device('cuda', x), opt.gpus))
 
+    exp_name = f"align{opt.align_w:g}alpha{opt.align_alpha:g}_unif{opt.unif_w:g}t{opt.unif_t:g}"
+    if len(opt.suffix) > 0:
+        exp_name += f'_{opt.suffix}'
+
     opt.save_folder = os.path.join(
         opt.result_folder,
-        f"align{opt.align_w:g}alpha{opt.align_alpha:g}_unif{opt.unif_w:g}t{opt.unif_t:g}_info"
+        exp_name,
     )
     os.makedirs(opt.save_folder, exist_ok=True)
 
@@ -105,6 +110,8 @@ def main():
     loss_meter = AverageMeter('total_loss')
     it_time_meter = AverageMeter('iter_time')
     info_rate_meter = AverageMeter('info_rate')
+    noni_rate_meter = AverageMeter('noni_rate')
+
     for epoch in range(opt.epochs):
         align_meter.reset()
         unif_meter.reset()
@@ -118,21 +125,23 @@ def main():
             unif_loss_val = (uniform_loss(x, t=opt.unif_t) + uniform_loss(y, t=opt.unif_t)) / 2
             loss = align_loss_val * opt.align_w + unif_loss_val * opt.unif_w
 
-            info_x_index = info_x.to(opt.gpus[0]) > 0.3
-            info_y_index = info_y.to(opt.gpus[0]) > 0.3
 
-            info_pair_index = info_x_index & info_y_index
+            info_x, info_y = info_x.to(opt.gpus[0]), info_y.to(opt.gpus[0])
+            info_x_idx, noni_x_idx = info_x > 0.5, info_x < 0.2
+            info_y_idx, noni_y_idx = info_y > 0.5, info_y < 0.2
 
-            if info_pair_index.any():
-                align_loss_info = align_loss(x[info_pair_index], y[info_pair_index], alpha=opt.align_alpha)
+            info_pair_idx = info_x_idx & info_y_idx
+
+            if info_pair_idx.any():
+                align_loss_info = align_loss(x[info_pair_idx], y[info_pair_idx], alpha=opt.align_alpha)
             else:
                 align_loss_info = 0
 
             uniform_loss_noninfo = 0
-            if (~info_x_index).any():
-                uniform_loss_noninfo += uniform_loss(x[~info_x_index], t=opt.unif_t)
-            if (~info_y_index).any():
-                uniform_loss_noninfo += uniform_loss(y[~info_y_index], t=opt.unif_t)
+            if noni_x_idx.any():
+                uniform_loss_noninfo += uniform_loss(x[noni_x_idx], t=opt.unif_t)
+            if noni_y_idx.any():
+                uniform_loss_noninfo += uniform_loss(y[noni_y_idx], t=opt.unif_t)
             uniform_loss_noninfo /= 2
 
             loss_info = align_loss_info * opt.align_w + uniform_loss_noninfo * opt.unif_w
@@ -142,13 +151,15 @@ def main():
             align_meter.update(align_loss_val, x.shape[0])
             unif_meter.update(unif_loss_val)
             loss_meter.update(loss, x.shape[0])
-            info_rate_meter.update((get_rate(info_x_index)+get_rate(info_y_index))/2)
+            info_rate_meter.update((get_rate(info_x_idx)+get_rate(info_y_idx))/2)
+            noni_rate_meter.update((get_rate(noni_x_idx)+get_rate(noni_y_idx))/2)
+
             loss.backward()
             optim.step()
             it_time_meter.update(time.time() - t0)
             if ii % opt.log_interval == 0:
                 print(f"Epoch {epoch}/{opt.epochs}\tIt {ii}/{len(loader)}\t" +
-                      f"{align_meter}\t{unif_meter}\t{loss_meter}\t{it_time_meter}\t{info_rate_meter}")
+                      f"{align_meter}\t{unif_meter}\t{loss_meter}\t{it_time_meter}\t{info_rate_meter}\t{noni_rate_meter}")
             t0 = time.time()
         scheduler.step()
 

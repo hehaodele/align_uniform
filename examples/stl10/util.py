@@ -119,10 +119,26 @@ class TwoAugUnsupervisedDatasetWithBox(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.dataset)
 
+
+from ISR.models import RDN
+from PIL import Image
+
+class TwoAugUnsupervisedDatasetSuper(TwoAugUnsupervisedDataset):
+    def __init__(self, dataset, transform):
+        super(TwoAugUnsupervisedDatasetSuper, self).__init__(dataset, transform)
+        self.rdn = RDN(weights='psnr-small')
+
+    def __getitem__(self, index):
+        image, _ = self.dataset[index]
+        image = Image.fromarray(self.rdn(np.arrat(image)))
+        return self.transform(image), self.transform(image)
+
+
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from tqdm import tqdm
     import numpy as np
+    from local import data_folder
 
     transform_crop = RandomResizedCropWithBox(64, scale=(0.08, 1))
     transform_others = torchvision.transforms.Compose([
@@ -135,7 +151,6 @@ if __name__ == '__main__':
             (0.26826768628079806, 0.2610450402318512, 0.26866836876860795),
         ),
     ])
-    data_folder = '/afs/csail.mit.edu/u/h/hehaodele/radar/Hao/datasets'
 
     dataset = TwoAugUnsupervisedDatasetWithBox(
         torchvision.datasets.STL10(data_folder, 'train', download=True),

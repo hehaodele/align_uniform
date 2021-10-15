@@ -6,7 +6,7 @@ import torchvision
 import torch
 import torch.nn as nn
 
-from util import AverageMeter, TwoAugUnsupervisedDataset
+from util import AverageMeter, TwoAugUnsupervisedDataset, TwoAugUnsupervisedDatasetSuper
 from encoder import SmallAlexNet
 from align_uniform import align_loss, uniform_loss
 import json
@@ -40,6 +40,7 @@ def parse_option():
     parser.add_argument('--result_folder', type=str, default='./results', help='Base directory to save model')
 
     parser.add_argument('--suffix', type=str, default='', help='Name Suffix')
+    parser.add_argument('--mode', type=str, default='', help='Mode')
 
 
     opt = parser.parse_args()
@@ -79,7 +80,12 @@ def get_data_loader(opt):
             (0.26826768628079806, 0.2610450402318512, 0.26866836876860795),
         ),
     ])
-    dataset = TwoAugUnsupervisedDataset(
+
+    DatasetClass = TwoAugUnsupervisedDataset
+    if opt.mode == 'sr':
+        DatasetClass = TwoAugUnsupervisedDatasetSuper
+
+    dataset = DatasetClass(
         torchvision.datasets.STL10(opt.data_folder, 'train+unlabeled', download=True), transform=transform)
     return torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, num_workers=opt.num_workers,
                                        shuffle=True, pin_memory=True)
